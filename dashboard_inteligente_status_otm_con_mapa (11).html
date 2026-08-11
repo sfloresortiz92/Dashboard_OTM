@@ -1,0 +1,1219 @@
+<!DOCTYPE html>
+<html lang="es" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Control Operativo & Status OTM</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        darkBg: '#0b0f19',
+                        cardBg: '#111827',
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- FontAwesome para iconos -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Chart.js para gráficos -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Leaflet CSS y JS para el Mapa de Perú -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <!-- Chart.js Plugin datalabels para mostrar los números en la dona -->
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
+    <!-- SheetJS para Excel -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <!-- html2canvas para exportar en imagen nítida HD -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .glass-card {
+            background: rgba(17, 24, 39, 0.75);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        
+        /* Estilos de Hora en Rampa basados exactamente en la referencia (Verde, Amarillo, Naranja, Rojo) */
+        .badge-time-green { background-color: #a7f3d0; color: #065f46; font-weight: 700; border-radius: 0.375rem; padding: 0.25rem 0.6rem; display: inline-block; }
+        .badge-time-yellow { background-color: #fde047; color: #713f12; font-weight: 700; border-radius: 0.375rem; padding: 0.25rem 0.6rem; display: inline-block; }
+        .badge-time-orange { background-color: #fed7aa; color: #7c2d12; font-weight: 700; border-radius: 0.375rem; padding: 0.25rem 0.6rem; display: inline-block; }
+        .badge-time-red { background-color: #fca5a5; color: #7f1d1d; font-weight: 700; border-radius: 0.375rem; padding: 0.25rem 0.6rem; display: inline-block; }
+        
+        /* Estilos de Estado UT */
+        .badge-est-custom { 
+            font-weight: 700; 
+            border-radius: 0.375rem; 
+            padding: 0.25rem 0.65rem; 
+            display: inline-block; 
+            font-size: 11px; 
+            text-transform: uppercase; 
+            letter-spacing: 0.025em;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+        }
+        .badge-est-cargando { background-color: #fef08a; color: #854d0e; }
+        .badge-est-por-guiar { background-color: #fecdd3; color: #9f1239; }
+        .badge-est-rampa { background-color: #bbf7d0; color: #166534; }
+        .badge-est-planeado { background-color: #bae6fd; color: #0369a1; }
+        .badge-est-con-pesaje { background-color: #a7f3d0; color: #065f46; }
+
+        #map { height: 600px; width: 100%; border-radius: 1rem; z-index: 10; background: #0b0f19; }
+        .leaflet-container { background: #0b0f19 !important; }
+        
+        /* Estilo para los nombres fijos de las provincias y nodos en el mapa */
+        .map-label-tooltip {
+            background: rgba(15, 23, 42, 0.85) !important;
+            border: 1px solid rgba(255, 255, 255, 0.2) !important;
+            color: #ffffff !important;
+            font-weight: 600 !important;
+            font-size: 11px !important;
+            padding: 2px 6px !important;
+            border-radius: 4px !important;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.5) !important;
+        }
+        .leaflet-tooltip-left.map-label-tooltip::before { border-left-color: rgba(15, 23, 42, 0.85) !important; }
+        .leaflet-tooltip-right.map-label-tooltip::before { border-right-color: rgba(15, 23, 42, 0.85) !important; }
+    </style>
+    <script>
+        window.otmRecords = [];
+        window.filteredRecords = [];
+        window.isTimeAsc = true;
+        window.mapInstance = null;
+        window.statusChart = null;
+        window.mapMarkers = []; // Array para almacenar los marcadores actuales del mapa
+
+        // Cargar y sincronizar con localStorage para soporte multiusuario / multidispositivo local
+        window.loadCloudData = function() {
+            try {
+                const saved = localStorage.getItem('otm_cloud_records_v2');
+                if (saved) {
+                    window.otmRecords = JSON.parse(saved);
+                } else {
+                    window.otmRecords = window.getDefaultRecords();
+                    window.saveCloudData();
+                }
+            } catch(e) {
+                window.otmRecords = window.getDefaultRecords();
+            }
+            window.filteredRecords = [...window.otmRecords];
+        };
+
+        window.saveCloudData = function() {
+            try {
+                localStorage.setItem('otm_cloud_records_v2', JSON.stringify(window.otmRecords));
+            } catch(e) {}
+        };
+
+        window.getDefaultRecords = function() {
+            return [
+                { id: '1', rampa: '111', cod: '961', destino: 'CD MASS PIURA', placa: 'ATL-993', transportista: 'ISL', estado: 'CARGANDO', tipoUt: 'PALETERO_46-52P', horaRampa: '2:05', llegada: '11/08/2026 15:54' },
+                { id: '2', rampa: '122', cod: '901', destino: 'SPSA CD AREQUIPA', placa: 'VFQ-978', transportista: 'AUSTRAL', estado: 'CARGANDO', tipoUt: 'FURGON_24-26P', horaRampa: '2:16', llegada: '11/08/2026 15:43' },
+                { id: '3', rampa: '123', cod: '960', destino: 'SPSA CD HUANCAYO', placa: 'C2A-998', transportista: 'DPM', estado: 'CARGANDO', tipoUt: 'FURGON_18P', horaRampa: '2:28', llegada: '11/08/2026 15:31' },
+                { id: '4', rampa: '20-A', cod: '4', destino: 'PVO PLAZA VEA JAEN', placa: 'BCG-978', transportista: 'ISL', estado: 'CARGANDO', tipoUt: 'PALETERO_46-52P', horaRampa: '3:25', llegada: '11/08/2026 14:34' },
+                { id: '5', rampa: '34-A', cod: '5', destino: 'PVO PLAZA VEA TARAPOTO', placa: 'ATL-995', transportista: 'ISL', estado: 'POR_GUIAR', tipoUt: 'PALETERO_46-52P', horaRampa: '6:48', llegada: '11/08/2026 11:11' },
+                { id: '6', rampa: '38-A', cod: '2', destino: 'PVO PLAZA VEA PUCALLPA', placa: 'AUZ-971', transportista: 'MARLON', estado: 'RAMPA', tipoUt: 'PALETERO_46-52P', horaRampa: '0:27', llegada: '11/08/2026 17:32' },
+                { id: '7', rampa: '38-B', cod: '895', destino: 'SPSA MAKRO HUANCAYO', placa: 'ATE-981', transportista: 'DPM', estado: 'RAMPA', tipoUt: 'PALETERO_36P', horaRampa: '0:24', llegada: '11/08/2026 17:35' },
+                { id: '8', rampa: '40-A', cod: '115', destino: 'SPSA PVEA HUANCAYO', placa: 'B2J-986', transportista: 'MARLON', estado: 'CARGANDO', tipoUt: 'PALETERO_46-52P', horaRampa: '2:35', llegada: '11/08/2026 15:24' },
+                { id: '9', rampa: '42-A', cod: '147', destino: 'SPSA PVEA JULIACA', placa: 'BJN-984', transportista: 'AUSTRAL', estado: 'CARGANDO', tipoUt: 'PALETERO_46-52P', horaRampa: '5:45', llegada: '11/08/2026 12:14' },
+                { id: '10', rampa: '46-A', cod: '146', destino: 'SPSA PVEA TACNA', placa: 'BVL-996', transportista: 'ALTAMIRA', estado: 'CARGANDO', tipoUt: 'PALETERO_46-52P', horaRampa: '3:28', llegada: '11/08/2026 14:31' },
+                { id: '11', rampa: '50-A', cod: '449', destino: 'SPSA ECONOMAX SAN JERONIMO CUS', placa: 'Z3F-979', transportista: 'ALTAMIRA', estado: 'POR_GUIAR', tipoUt: 'PALETERO_46-52P', horaRampa: '18:40', llegada: '10/08/2026 23:19' },
+                { id: '12', rampa: '53', cod: '236', destino: 'SPSA PVEA PISCO', placa: 'D1Q-700', transportista: 'HZ', estado: 'RAMPA', tipoUt: 'CAMION_16P', horaRampa: '0:43', llegada: '11/08/2026 17:16' }
+            ];
+        };
+
+        window.openShareModal = function() {
+            const input = document.getElementById('shareUrlInput');
+            if (input) {
+                input.value = window.location.href;
+            }
+            const modal = document.getElementById('shareModal');
+            if (modal) modal.classList.remove('hidden');
+        };
+
+        window.closeShareModal = function() {
+            const modal = document.getElementById('shareModal');
+            if (modal) modal.classList.add('hidden');
+        };
+
+        // Función para exportar todo el tablero en una imagen HD nítida usando html2canvas
+        window.exportDashboardAsHDImage = function() {
+            const dashboardElement = document.getElementById('mainDashboardContainer');
+            if (!dashboardElement) return;
+
+            // Mostrar aviso visual de carga
+            const btn = document.getElementById('btnExportImg');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '<i class="fa-solid fa-spinner animate-spin"></i> Generando HD...';
+            btn.disabled = true;
+
+            // Ocultar temporalmente los botones de acción para que la foto salga limpia de controles de UI
+            const headerActions = document.querySelector('header .flex.items-center.flex-wrap.gap-2.5');
+            if (headerActions) headerActions.style.display = 'none';
+
+            html2canvas(dashboardElement, {
+                scale: 2, // Escala 2x para máxima nitidez (alta resolución)
+                useCORS: true,
+                backgroundColor: '#0b0f19',
+                logging: false
+            }).then(canvas => {
+                if (headerActions) headerActions.style.display = 'flex';
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+
+                // Crear enlace de descarga automática
+                const imageURL = canvas.toDataURL('image/png');
+                const downloadLink = document.createElement('a');
+                downloadLink.href = imageURL;
+                const dateStr = new Date().toISOString().slice(0, 10);
+                downloadLink.download = `Reporte-OTM-TorreControl-${dateStr}.png`;
+                document.body.appendChild(downloadLink);
+                downloadLink.click();
+                document.body.removeChild(downloadLink);
+
+                alert('¡Imagen HD generada y descargada con éxito! Ya puedes adjuntarla en WhatsApp o correo.');
+            }).catch(err => {
+                if (headerActions) headerActions.style.display = 'flex';
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+                console.error(err);
+                alert('Hubo un error al generar la imagen.');
+            });
+        };
+
+        window.openPasteModal = function() {
+            const modal = document.getElementById('pasteModal');
+            if (modal) modal.classList.remove('hidden');
+        };
+
+        window.closePasteModal = function() {
+            const modal = document.getElementById('pasteModal');
+            if (modal) modal.classList.add('hidden');
+        };
+
+        window.openRecordModal = function(id = null) {
+            const modal = document.getElementById('recordModal');
+            const docIdInput = document.getElementById('recordDocId');
+            const form = document.getElementById('recordForm');
+            if (!modal) return;
+            if (form) form.reset();
+            if (docIdInput) docIdInput.value = '';
+            
+            const titleEl = document.getElementById('modalTitle');
+            if (id) {
+                if (titleEl) titleEl.innerText = 'Modificar Unidad OTM';
+                const rec = window.otmRecords.find(r => r.id === id);
+                if (rec) {
+                    if (docIdInput) docIdInput.value = rec.id;
+                    document.getElementById('inputRampa').value = rec.rampa || '';
+                    document.getElementById('inputCod').value = rec.cod || '';
+                    document.getElementById('inputDestino').value = rec.destino || '';
+                    document.getElementById('inputPlaca').value = rec.placa || '';
+                    document.getElementById('inputTransportista').value = rec.transportista || '';
+                    document.getElementById('inputEstado').value = rec.estado || 'RAMPA';
+                    document.getElementById('inputTipoUt').value = rec.tipoUt || 'PALETERO_46-52P';
+                    document.getElementById('inputLlegada').value = rec.llegada || '';
+                    document.getElementById('inputHoraRampa').value = rec.horaRampa || '2:00';
+                }
+            } else {
+                if (titleEl) titleEl.innerText = 'Registrar Nueva Unidad OTM';
+                document.getElementById('inputLlegada').value = '11/08/2026 16:00';
+                document.getElementById('inputHoraRampa').value = '1:30';
+            }
+            modal.classList.remove('hidden');
+        };
+
+        window.closeRecordModal = function() {
+            const modal = document.getElementById('recordModal');
+            if (modal) modal.classList.add('hidden');
+        };
+
+        window.parseExcelEstado = function(val) {
+            if (!val) return 'RAMPA';
+            const s = String(val).trim().toUpperCase();
+            if (s.includes('CARGANDO')) return 'CARGANDO';
+            if (s.includes('GUIAR')) return 'POR_GUIAR';
+            if (s.includes('RAMPA')) return 'RAMPA';
+            if (s.includes('PLANEADO')) return 'PLANEADO';
+            if (s.includes('PESAJE')) return 'CON_PESAJE';
+            return 'RAMPA';
+        };
+
+        window.parseExcelDate = function(val) {
+            if (!val) return '11/08/2026 12:00';
+            const strVal = String(val).trim();
+            if (strVal.includes('/') || strVal.includes('-')) return strVal;
+            const num = parseFloat(strVal);
+            if (!isNaN(num) && num > 1000) {
+                const excelEpoch = new Date(1899, 11, 30);
+                const jsDate = new Date(excelEpoch.getTime() + num * 86400000);
+                if (!isNaN(jsDate.getTime())) {
+                    const day = String(jsDate.getDate()).padStart(2, '0');
+                    const month = String(jsDate.getMonth() + 1).padStart(2, '0');
+                    const year = jsDate.getFullYear();
+                    const hours = String(jsDate.getHours()).padStart(2, '0');
+                    const minutes = String(jsDate.getMinutes()).padStart(2, '0');
+                    return `${day}/${month}/${year} ${hours}:${minutes}`;
+                }
+            }
+            return strVal;
+        };
+
+        window.parseExcelHoraRampa = function(val) {
+            if (!val) return '02:00';
+            const strVal = String(val).trim();
+            if (strVal.includes(':')) {
+                const parts = strVal.split(':');
+                const h = String(parseInt(parts[0], 10) || 0).padStart(2, '0');
+                const m = String(parseInt(parts[1], 10) || 0).padStart(2, '0');
+                return `${h}:${m}`;
+            }
+            const num = parseFloat(strVal);
+            if (!isNaN(num)) {
+                let totalMinutes = Math.round(num * 24 * 60);
+                const h = Math.floor(totalMinutes / 60);
+                const m = totalMinutes % 60;
+                return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+            }
+            return strVal;
+        };
+
+        window.renderTimeBadge = function(timeStr) {
+            const formattedTime = window.parseExcelHoraRampa(timeStr);
+            const parts = formattedTime.split(':');
+            const totalMinutes = (parseInt(parts[0], 10) || 0) * 60 + (parseInt(parts[1], 10) || 0);
+
+            let badgeClass = 'badge-time-green';
+            if (totalMinutes > 720 || formattedTime.startsWith('24:')) {
+                badgeClass = 'badge-time-red';
+            } else if (totalMinutes > 300) {
+                badgeClass = 'badge-time-orange';
+            } else if (totalMinutes > 180) {
+                badgeClass = 'badge-time-yellow';
+            }
+
+            return `<span class="${badgeClass}">${formattedTime}</span>`;
+        };
+
+        window.handleExcelUpload = function(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const data = new Uint8Array(e.target.result);
+                    const workbook = XLSX.read(data, { type: 'array' });
+                    
+                    let sheetName = workbook.SheetNames.find(name => name.trim().toLowerCase() === 'tabla');
+                    if (!sheetName) sheetName = workbook.SheetNames[0];
+                    
+                    const worksheet = workbook.Sheets[sheetName];
+                    const json = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+                    
+                    let newRecords = [];
+                    for (let i = 0; i < json.length; i++) {
+                        const row = json[i];
+                        if (!row || row.length === 0) continue;
+                        
+                        let rampa = row[0] !== undefined ? String(row[0]).trim() : '';
+                        let cod = row[1] !== undefined ? String(row[1]).trim() : '';
+                        let destino = row[2] !== undefined ? String(row[2]).trim() : '';
+                        let placa = row[3] !== undefined ? String(row[3]).trim() : '';
+                        let transportista = row[4] !== undefined ? String(row[4]).trim() : '';
+                        let estado = row[5] !== undefined ? String(row[5]).trim() : '';
+                        let tipoUt = row[6] !== undefined ? String(row[6]).trim() : '';
+                        let horaRampa = row[7] !== undefined ? String(row[7]).trim() : '';
+                        let llegada = row[8] !== undefined ? String(row[8]).trim() : '';
+
+                        const lowerDestino = destino.toLowerCase();
+                        const lowerRampa = rampa.toLowerCase();
+                        if (lowerDestino.includes('destino') || lowerRampa.includes('rampa') || (!destino && !placa)) {
+                            continue;
+                        }
+
+                        if (destino || placa || rampa) {
+                            newRecords.push({
+                                id: 'excel_' + i + '_' + Math.random().toString(36).substring(2, 7),
+                                rampa: rampa || 'S/N',
+                                cod: cod || '0',
+                                destino: destino.toUpperCase(),
+                                placa: placa.toUpperCase() || 'S/P',
+                                transportista: transportista ? transportista.toUpperCase() : 'GENERAL',
+                                estado: window.parseExcelEstado(estado),
+                                tipoUt: tipoUt ? tipoUt.toUpperCase() : 'PALETERO_46-52P',
+                                horaRampa: window.parseExcelHoraRampa(horaRampa),
+                                llegada: window.parseExcelDate(llegada)
+                            });
+                        }
+                    }
+
+                    if (newRecords.length > 0) {
+                        window.otmRecords = newRecords;
+                        window.filteredRecords = [...window.otmRecords];
+                        window.saveCloudData();
+                        window.updateDashboardUI();
+                        alert(`¡Se cargaron ${newRecords.length} UTs correctamente desde el archivo Excel!`);
+                    } else {
+                        alert('No se encontraron filas con datos válidos en la hoja seleccionada.');
+                    }
+                } catch(err) {
+                    console.error(err);
+                    alert('Error al leer el archivo Excel.');
+                }
+            };
+            reader.readAsArrayBuffer(file);
+            event.target.value = '';
+        };
+
+        window.processPastedData = function() {
+            const text = document.getElementById('pasteTextArea').value;
+            if (!text.trim()) {
+                alert('Por favor pegue los datos tabulados.');
+                return;
+            }
+            const lines = text.split('\n');
+            let newRecords = [];
+            lines.forEach((line, idx) => {
+                const cols = line.split('\t');
+                if (cols.length >= 4) {
+                    const rampa = cols[0] ? cols[0].trim() : '';
+                    const cod = cols[1] ? cols[1].trim() : '';
+                    const destino = cols[2] ? cols[2].trim() : '';
+                    const placa = cols[3] ? cols[3].trim() : '';
+                    if (destino || placa) {
+                        newRecords.push({
+                            id: 'paste_' + idx + '_' + Math.random().toString(36).substring(2, 7),
+                            rampa: rampa || 'S/N',
+                            cod: cod || '0',
+                            destino: destino.toUpperCase(),
+                            placa: placa.toUpperCase(),
+                            transportista: cols[4] ? cols[4].trim().toUpperCase() : 'GENERAL',
+                            estado: window.parseExcelEstado(cols[5]),
+                            tipoUt: cols[6] ? cols[6].trim().toUpperCase() : 'PALETERO_46-52P',
+                            horaRampa: window.parseExcelHoraRampa(cols[7]),
+                            llegada: window.parseExcelDate(cols[8])
+                        });
+                    }
+                }
+            });
+
+            if (newRecords.length > 0) {
+                window.otmRecords = newRecords;
+                window.filteredRecords = [...window.otmRecords];
+                window.saveCloudData();
+                window.updateDashboardUI();
+                window.closePasteModal();
+                alert(`¡Se procesaron y cargaron ${newRecords.length} UTs correctamente!`);
+            } else {
+                alert('No se pudieron reconocer datos tabulados válidos.');
+            }
+        };
+
+        window.saveRecord = function(event) {
+            event.preventDefault();
+            const id = document.getElementById('recordDocId').value;
+            const rampa = document.getElementById('inputRampa').value.trim();
+            const cod = document.getElementById('inputCod').value.trim();
+            const destino = document.getElementById('inputDestino').value.trim().toUpperCase();
+            const placa = document.getElementById('inputPlaca').value.trim().toUpperCase();
+            const transportista = document.getElementById('inputTransportista').value.trim().toUpperCase();
+            const estado = document.getElementById('inputEstado').value;
+            const tipoUt = document.getElementById('inputTipoUt').value;
+            const llegada = document.getElementById('inputLlegada').value.trim();
+            const horaRampa = document.getElementById('inputHoraRampa').value.trim();
+
+            if (id) {
+                const idx = window.otmRecords.findIndex(r => r.id === id);
+                if (idx !== -1) {
+                    window.otmRecords[idx] = { id, rampa, cod, destino, placa, transportista, estado, tipoUt, llegada, horaRampa };
+                }
+            } else {
+                const newRec = {
+                    id: 'rec_' + Math.random().toString(36).substring(2, 9),
+                    rampa, cod, destino, placa, transportista, estado, tipoUt, llegada, horaRampa
+                };
+                window.otmRecords.unshift(newRec);
+            }
+            window.filteredRecords = [...window.otmRecords];
+            window.saveCloudData();
+            window.updateDashboardUI();
+            window.closeRecordModal();
+        };
+
+        window.deleteRecord = function(id) {
+            if (confirm('¿Está seguro de eliminar esta unidad OTM?')) {
+                window.otmRecords = window.otmRecords.filter(r => r.id !== id);
+                window.filteredRecords = [...window.otmRecords];
+                window.saveCloudData();
+                window.updateDashboardUI();
+            }
+        };
+
+        window.resetFilters = function() {
+            document.getElementById('searchInput').value = '';
+            document.getElementById('filterZona').value = 'ALL';
+            document.getElementById('filterEstado').value = 'ALL';
+            document.getElementById('filterDestino').value = 'ALL';
+            window.filteredRecords = [...window.otmRecords];
+            window.renderTable();
+        };
+
+        window.applyFilters = function() {
+            const query = document.getElementById('searchInput').value.toLowerCase();
+            const zona = document.getElementById('filterZona').value;
+            const estado = document.getElementById('filterEstado').value;
+            const destinoType = document.getElementById('filterDestino').value;
+
+            window.filteredRecords = window.otmRecords.filter(r => {
+                const matchQuery = !query || r.rampa.toLowerCase().includes(query) || r.destino.toLowerCase().includes(query) || r.placa.toLowerCase().includes(query);
+                
+                let matchZona = true;
+                if (zona === 'CD Regionales') {
+                    matchZona = r.destino.includes('CD');
+                } else if (zona === 'Provincia') {
+                    matchZona = !r.destino.includes('CD');
+                }
+
+                const matchEstado = estado === 'ALL' || r.estado === estado;
+
+                let matchDestino = true;
+                if (destinoType !== 'ALL') {
+                    if (destinoType === 'pvea') matchDestino = r.destino.includes('PLAZA VEA') || r.destino.includes('PVEA');
+                    else if (destinoType === 'cd') matchDestino = r.destino.includes('CD');
+                    else if (destinoType === 'economax') matchDestino = r.destino.includes('ECONOMAX');
+                    else if (destinoType === 'makro') matchDestino = r.destino.includes('MAKRO');
+                    else if (destinoType === 'pvo') matchDestino = r.destino.includes('PVO');
+                }
+
+                return matchQuery && matchZona && matchEstado && matchDestino;
+            });
+
+            window.renderTable();
+        };
+
+        window.toggleTimeSort = function() {
+            window.isTimeAsc = !window.isTimeAsc;
+            const icon = document.getElementById('sortIcon');
+            if (icon) icon.className = window.isTimeAsc ? 'fa-solid fa-sort-up ml-1 text-cyan-400' : 'fa-solid fa-sort-down ml-1 text-cyan-400';
+            
+            window.filteredRecords.sort((a, b) => {
+                const parseMin = (str) => {
+                    const clean = window.parseExcelHoraRampa(str);
+                    if (!clean) return 0;
+                    const parts = clean.split(':');
+                    if (parts.length === 2) return (parseInt(parts[0], 10) || 0) * 60 + (parseInt(parts[1], 10) || 0);
+                    return parseInt(clean, 10) || 0;
+                };
+                const tA = parseMin(a.horaRampa);
+                const tB = parseMin(b.horaRampa);
+                return window.isTimeAsc ? tA - tB : tB - tA;
+            });
+            window.renderTable();
+        };
+
+        window.updateDashboardUI = function() {
+            const total = window.otmRecords.length;
+            const rampaCnt = window.otmRecords.filter(r => r.estado === 'RAMPA').length;
+            const cargandoCnt = window.otmRecords.filter(r => r.estado === 'CARGANDO').length;
+            const porGuiarCnt = window.otmRecords.filter(r => r.estado === 'POR_GUIAR').length;
+            const planeadoCnt = window.otmRecords.filter(r => r.estado === 'PLANEADO').length;
+            const conPesajeCnt = window.otmRecords.filter(r => r.estado === 'CON_PESAJE').length;
+
+            document.getElementById('statTotal').innerText = total;
+            document.getElementById('statRampa').innerText = rampaCnt;
+            document.getElementById('statCargando').innerText = cargandoCnt;
+            document.getElementById('statPorGuiar').innerText = porGuiarCnt;
+            document.getElementById('statPlaneado').innerText = planeadoCnt;
+            document.getElementById('statConPesaje').innerText = conPesajeCnt;
+
+            const elLegRampa = document.getElementById('statLegRampa');
+            const elLegCargando = document.getElementById('statLegCargando');
+            const elLegPorGuiar = document.getElementById('statLegPorGuiar');
+            const elLegPlaneado = document.getElementById('statLegPlaneado');
+            const elLegConPesaje = document.getElementById('statLegConPesaje');
+
+            if (elLegRampa) elLegRampa.innerText = rampaCnt;
+            if (elLegCargando) elLegCargando.innerText = cargandoCnt;
+            if (elLegPorGuiar) elLegPorGuiar.innerText = porGuiarCnt;
+            if (elLegPlaneado) elLegPlaneado.innerText = planeadoCnt;
+            if (elLegConPesaje) elLegConPesaje.innerText = conPesajeCnt;
+
+            const safePct = (val) => total > 0 ? ((val / total) * 100).toFixed(1) + '%' : '0.0%';
+            document.getElementById('pctRampa').innerText = safePct(rampaCnt) + ' del total';
+            document.getElementById('pctCargando').innerText = safePct(cargandoCnt) + ' en proceso';
+            document.getElementById('pctPorGuiar').innerText = safePct(porGuiarCnt) + ' doc. pendiente';
+            document.getElementById('pctPlaneado').innerText = safePct(planeadoCnt) + ' en agenda';
+            document.getElementById('pctConPesaje').innerText = safePct(conPesajeCnt) + ' balanza/salida';
+
+            // Corrección estricta de conteo según destino para ZONA CD REGIONALES y ZONA PROVINCIA
+            const cdTrujillo = window.otmRecords.filter(r => { const d = r.destino; return d.includes('TRUJILLO') && d.includes('CD'); }).length;
+            const cdPiura = window.otmRecords.filter(r => { const d = r.destino; return d.includes('PIURA') && d.includes('CD'); }).length;
+            const cdChiclayo = window.otmRecords.filter(r => { const d = r.destino; return (d.includes('CHICLAYO') || d.includes('MASS CHICLAYO')) && d.includes('CD'); }).length;
+            const cdArequipa = window.otmRecords.filter(r => { const d = r.destino; return d.includes('AREQUIPA') && d.includes('CD'); }).length;
+            const cdHuancayo = window.otmRecords.filter(r => { const d = r.destino; return d.includes('HUANCAYO') && d.includes('CD'); }).length;
+            const cdLima = window.otmRecords.filter(r => { const d = r.destino; return (d.includes('LIMA') || d.includes('CALLAO')) && (d.includes('CD') || !d.includes('PVEA') && !d.includes('MAKRO') && !d.includes('ECONOMAX') && !d.includes('PVO')); }).length;
+            
+            const cdTotalSum = cdTrujillo + cdPiura + cdChiclayo + cdArequipa + cdHuancayo + cdLima;
+
+            document.getElementById('cntCdTrujillo').innerText = cdTrujillo + ' UTs';
+            document.getElementById('cntCdPiura').innerText = cdPiura + ' UTs';
+            document.getElementById('cntCdChiclayo').innerText = cdChiclayo + ' UTs';
+            document.getElementById('cntCdArequipa').innerText = cdArequipa + ' UTs';
+            document.getElementById('cntCdHuancayo').innerText = cdHuancayo + ' UTs';
+            document.getElementById('cntCdLima').innerText = cdLima + ' UTs';
+            document.getElementById('badgeCdTotal').innerText = cdTotalSum + ' UTs Total';
+
+            const makro = window.otmRecords.filter(r => r.destino.includes('MAKRO')).length;
+            const economax = window.otmRecords.filter(r => r.destino.includes('ECONOMAX')).length;
+            const plazaVea = window.otmRecords.filter(r => (r.destino.includes('PLAZA VEA') || r.destino.includes('PVEA')) && !r.destino.includes('PVO')).length;
+            const pvo = window.otmRecords.filter(r => r.destino.includes('PVO') || r.destino.includes('PVO PLAZA VEA')).length;
+            
+            const provTotalSum = makro + economax + plazaVea + pvo;
+
+            document.getElementById('cntMakro').innerText = makro + ' UTs';
+            document.getElementById('cntEconomax').innerText = economax + ' UTs';
+            document.getElementById('cntPlazaVea').innerText = plazaVea + ' UTs';
+            document.getElementById('cntPvo').innerText = pvo + ' UTs';
+            document.getElementById('badgeProvTotal').innerText = provTotalSum + ' UTs Total';
+
+            window.renderTable();
+            window.updateChart(rampaCnt, cargandoCnt, porGuiarCnt, planeadoCnt, conPesajeCnt);
+            window.updateMapNodes();
+        };
+
+        window.renderTable = function() {
+            const tbody = document.getElementById('otmTableBody');
+            if (!tbody) return;
+            document.getElementById('recordCount').innerText = window.filteredRecords.length;
+
+            if (window.filteredRecords.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="10" class="text-center py-8 text-slate-400">No se encontraron registros activos. Cargue un archivo Excel o registre una nueva unidad.</td></tr>`;
+                return;
+            }
+
+            let html = '';
+            window.filteredRecords.forEach(r => {
+                let badgeClass = 'badge-est-rampa';
+                let estText = r.estado;
+                if (r.estado === 'CARGANDO') badgeClass = 'badge-est-cargando';
+                else if (r.estado === 'POR_GUIAR') badgeClass = 'badge-est-por-guiar';
+                else if (r.estado === 'RAMPA') badgeClass = 'badge-est-rampa';
+                else if (r.estado === 'PLANEADO') badgeClass = 'badge-est-planeado';
+                else if (r.estado === 'CON_PESAJE') badgeClass = 'badge-est-con-pesaje';
+
+                html += `
+                    <tr class="hover:bg-slate-800/50 transition">
+                        <td class="px-3 py-3 text-center font-bold text-cyan-400 border-r border-slate-800 bg-slate-900/30">${r.rampa}</td>
+                        <td class="px-3 py-3 font-semibold text-slate-300 border-r border-slate-800">${r.cod}</td>
+                        <td class="px-4 py-3 font-bold text-white border-r border-slate-800">${r.destino}</td>
+                        <td class="px-3 py-3 font-mono font-bold text-amber-300 border-r border-slate-800">${r.placa}</td>
+                        <td class="px-3 py-3 text-slate-300 border-r border-slate-800">${r.transportista}</td>
+                        <td class="px-3 py-3 text-center border-r border-slate-800"><span class="badge-est-custom ${badgeClass}">${estText}</span></td>
+                        <td class="px-3 py-3 text-slate-300 border-r border-slate-800 text-[11px]">${r.tipoUt}</td>
+                        <td class="px-3 py-3 text-center border-r border-slate-800 font-mono text-slate-200">
+                            ${window.renderTimeBadge(r.horaRampa)}
+                        </td>
+                        <td class="px-3 py-3 text-center text-slate-300 font-mono text-[11px] font-semibold">${window.parseExcelDate(r.llegada)}</td>
+                        <td class="px-3 py-3 text-center">
+                            <div class="flex items-center justify-center gap-2">
+                                <button onclick="openRecordModal('${r.id}')" class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-400 transition" title="Editar">
+                                    <i class="fa-solid fa-pen text-xs"></i>
+                                </button>
+                                <button onclick="deleteRecord('${r.id}')" class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-rose-400 transition" title="Eliminar">
+                                    <i class="fa-solid fa-trash text-xs"></i>
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            });
+            tbody.innerHTML = html;
+        };
+
+        window.updateChart = function(rampa, cargando, porGuiar, planeado, conPesaje) {
+            const ctx = document.getElementById('statusChart');
+            if (!ctx) return;
+
+            if (window.statusChart) {
+                window.statusChart.destroy();
+            }
+
+            window.statusChart = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Rampa', 'Cargando', 'Por_Guiar', 'Planeado', 'Con_Pesaje'],
+                    datasets: [{
+                        data: [rampa, cargando, porGuiar, planeado, conPesaje],
+                        backgroundColor: ['#06b6d4', '#f59e0b', '#ec4899', '#a855f7', '#10b981'],
+                        borderWidth: 0,
+                        hoverOffset: 6
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        datalabels: {
+                            color: '#ffffff',
+                            font: { weight: 'bold', size: 16 },
+                            formatter: (value) => value > 0 ? value : ''
+                        }
+                    },
+                    cutout: '62%'
+                },
+                plugins: [ChartDataLabels]
+            });
+        };
+
+        window.getCoordinatesForDestination = function(dest) {
+            const d = dest.toUpperCase();
+            if (d.includes('PIURA')) return { lat: -5.1945, lng: -80.6328 };
+            if (d.includes('AREQUIPA')) return { lat: -16.4090, lng: -71.5375 };
+            if (d.includes('HUANCAYO')) return { lat: -12.0651, lng: -75.2049 };
+            if (d.includes('JAEN')) return { lat: -5.7089, lng: -78.8078 };
+            if (d.includes('TARAPOTO')) return { lat: -6.4869, lng: -76.3647 };
+            if (d.includes('PUCALLPA')) return { lat: -8.3791, lng: -74.5539 };
+            if (d.includes('JULIACA')) return { lat: -15.4989, lng: -70.1333 };
+            if (d.includes('TACNA')) return { lat: -18.0146, lng: -70.2536 };
+            if (d.includes('PISCO')) return { lat: -13.7081, lng: -76.2128 };
+            if (d.includes('TRUJILLO')) return { lat: -8.1116, lng: -79.0288 };
+            if (d.includes('CHICLAYO')) return { lat: -6.7714, lng: -79.8409 };
+            if (d.includes('CUSCO') || d.includes('SAN JERONIMO')) return { lat: -13.5319, lng: -71.9675 };
+            return { lat: -12.0464, lng: -77.0428 };
+        };
+
+        window.updateMapNodes = function() {
+            if (!window.mapInstance) return;
+
+            window.mapMarkers.forEach(m => window.mapInstance.removeLayer(m));
+            window.mapMarkers = [];
+
+            const destMap = {};
+            window.otmRecords.forEach(r => {
+                const dest = r.destino || 'DESTINO GENERAL';
+                if (!destMap[dest]) {
+                    destMap[dest] = {
+                        count: 0,
+                        units: [],
+                        ...window.getCoordinatesForDestination(dest)
+                    };
+                }
+                destMap[dest].count++;
+                destMap[dest].units.push(r);
+            });
+
+            Object.keys(destMap).forEach(dest => {
+                const info = destMap[dest];
+                let color = '#22d3ee';
+                if (dest.includes('MAKRO')) color = '#fbbf24';
+                else if (dest.includes('ECONOMAX')) color = '#34d399';
+                else if (dest.includes('PLAZA VEA') || dest.includes('PVEA') || dest.includes('PVO')) color = '#f43f5e';
+
+                const circleMarker = L.circleMarker([info.lat, info.lng], {
+                    radius: 11 + Math.min(info.count * 2, 10),
+                    fillColor: color,
+                    color: '#ffffff',
+                    weight: 2.5,
+                    opacity: 1,
+                    fillOpacity: 0.85
+                }).addTo(window.mapInstance);
+
+                circleMarker.bindTooltip(`${dest} (${info.count} UT${info.count > 1 ? 's' : ''})`, {
+                    permanent: true,
+                    direction: 'right',
+                    className: 'map-label-tooltip'
+                }).openTooltip();
+
+                let unitsHtml = info.units.map(u => `<div style="border-bottom:1px solid #eee; padding:3px 0; font-size:11px;"><b>Rampa:</b> ${u.rampa} | <b>Placa:</b> ${u.placa} | <b>Estado:</b> ${u.estado}</div>`).join('');
+                
+                circleMarker.bindPopup(`
+                    <div style="color:#000; min-width:200px; max-height:220px; overflow-y:auto;">
+                        <div style="font-weight:bold; font-size:13px; color:#0e7490; margin-bottom:4px;">${dest}</div>
+                        <div style="font-size:11px; color:#555; margin-bottom:6px;">Total Unidades: <b>${info.count}</b></div>
+                        ${unitsHtml}
+                    </div>
+                `);
+
+                window.mapMarkers.push(circleMarker);
+            });
+        };
+    </script>
+</head>
+<body class="bg-darkBg text-slate-100 min-h-screen flex flex-col antialiased selection:bg-cyan-500 selection:text-white">
+    <header class="border-b border-slate-800 bg-cardBg/80 backdrop-blur sticky top-0 z-40 px-4 lg:px-8 py-3.5 flex flex-wrap items-center justify-between gap-4">
+        <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center shadow-lg shadow-cyan-500/20 text-white font-bold">
+                <i class="fa-solid fa-truck-fast text-lg"></i>
+            </div>
+            <div>
+                <h1 class="text-lg font-bold text-white tracking-wide">Control Operativo & Status OTM</h1>
+                <p class="text-xs text-slate-400">Torre de Control en Tiempo Real Multiusuario</p>
+            </div>
+            <span class="ml-2 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-semibold flex items-center gap-1.5">
+                <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> Sincronizado En Línea
+            </span>
+        </div>
+
+        <div class="flex items-center flex-wrap gap-2.5">
+            <!-- Botón Exportar Imagen HD (Nítida) -->
+            <button id="btnExportImg" onclick="exportDashboardAsHDImage()" class="px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold text-xs rounded-xl shadow-lg shadow-blue-600/20 transition flex items-center gap-2">
+                <i class="fa-solid fa-image"></i> Exportar Imagen HD
+            </button>
+            <div class="px-3 py-2 bg-slate-900/80 border border-slate-800 rounded-xl text-xs font-mono text-cyan-300 flex items-center gap-2">
+                <i class="fa-regular fa-clock"></i> <span id="liveClock">--:--:--</span>
+            </div>
+            <button onclick="openPasteModal()" class="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-amber-400 font-medium text-xs rounded-xl border border-slate-700 transition flex items-center gap-2">
+                <i class="fa-solid fa-paste"></i> Pegar Data Excel
+            </button>
+            <label class="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-emerald-400 font-medium text-xs rounded-xl border border-slate-700 transition cursor-pointer flex items-center gap-2">
+                <i class="fa-solid fa-file-excel"></i> Cargar Archivo Excel
+                <input type="file" id="excelFileInput" accept=".xlsx, .xls" class="hidden" onchange="handleExcelUpload(event)">
+            </label>
+            <button onclick="openRecordModal()" class="px-4 py-2 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-semibold text-xs rounded-xl shadow-lg shadow-cyan-600/20 transition flex items-center gap-2">
+                <i class="fa-solid fa-plus"></i> Nueva Unidad
+            </button>
+        </div>
+    </header>
+
+    <!-- Contenedor principal que se capturará en Alta Resolución (HD) -->
+    <main id="mainDashboardContainer" class="flex-1 max-w-[1600px] w-full mx-auto p-4 lg:p-6 space-y-6 bg-darkBg">
+        <!-- Tarjetas de Estadísticas Principales -->
+        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+            <div class="glass-card rounded-2xl p-4 relative overflow-hidden group hover:border-cyan-500/50 transition">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-xs font-bold text-slate-400 uppercase tracking-wider">Total UTs</span>
+                    <span class="w-2.5 h-2.5 rounded-full bg-cyan-400"></span>
+                </div>
+                <div class="text-3xl font-extrabold text-white" id="statTotal">0</div>
+                <div class="text-[11px] text-cyan-400 mt-1 font-medium">100% en operación</div>
+            </div>
+
+            <div class="glass-card rounded-2xl p-4 relative overflow-hidden group hover:border-emerald-500/50 transition">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-xs font-bold text-slate-400 uppercase tracking-wider">En Rampa</span>
+                    <div class="w-8 h-8 rounded-xl bg-emerald-500/10 flex items-center justify-center text-emerald-400">
+                        <i class="fa-solid fa-warehouse text-sm"></i>
+                    </div>
+                </div>
+                <div class="text-3xl font-extrabold text-white" id="statRampa">0</div>
+                <div class="text-[11px] text-emerald-400 mt-1 font-medium" id="pctRampa">0.0% del total</div>
+            </div>
+
+            <div class="glass-card rounded-2xl p-4 relative overflow-hidden group hover:border-amber-500/50 transition">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-xs font-bold text-slate-400 uppercase tracking-wider">Cargando</span>
+                    <div class="w-8 h-8 rounded-xl bg-amber-500/10 flex items-center justify-center text-amber-400">
+                        <i class="fa-solid fa-dolly text-sm"></i>
+                    </div>
+                </div>
+                <div class="text-3xl font-extrabold text-white" id="statCargando">0</div>
+                <div class="text-[11px] text-amber-400 mt-1 font-medium" id="pctCargando">0.0% en proceso</div>
+            </div>
+
+            <div class="glass-card rounded-2xl p-4 relative overflow-hidden group hover:border-rose-500/50 transition">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-xs font-bold text-slate-400 uppercase tracking-wider">Por Guiar</span>
+                    <div class="w-8 h-8 rounded-xl bg-rose-500/10 flex items-center justify-center text-rose-400">
+                        <i class="fa-solid fa-file-lines text-sm"></i>
+                    </div>
+                </div>
+                <div class="text-3xl font-extrabold text-white" id="statPorGuiar">0</div>
+                <div class="text-[11px] text-rose-400 mt-1 font-medium" id="pctPorGuiar">0.0% doc. pendiente</div>
+            </div>
+
+            <div class="glass-card rounded-2xl p-4 relative overflow-hidden group hover:border-sky-500/50 transition">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-xs font-bold text-slate-400 uppercase tracking-wider">Planeado</span>
+                    <div class="w-8 h-8 rounded-xl bg-sky-500/10 flex items-center justify-center text-sky-400">
+                        <i class="fa-solid fa-calendar-days text-sm"></i>
+                    </div>
+                </div>
+                <div class="text-3xl font-extrabold text-white" id="statPlaneado">0</div>
+                <div class="text-[11px] text-sky-400 mt-1 font-medium" id="pctPlaneado">0.0% en agenda</div>
+            </div>
+
+            <div class="glass-card rounded-2xl p-4 relative overflow-hidden group hover:border-teal-500/50 transition">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-xs font-bold text-slate-400 uppercase tracking-wider">Con Pesaje</span>
+                    <div class="w-8 h-8 rounded-xl bg-teal-500/10 flex items-center justify-center text-teal-400">
+                        <i class="fa-solid fa-scale-balanced text-sm"></i>
+                    </div>
+                </div>
+                <div class="text-3xl font-extrabold text-white" id="statConPesaje">0</div>
+                <div class="text-[11px] text-teal-400 mt-1 font-medium" id="pctConPesaje">0.0% balanza/salida</div>
+            </div>
+        </div>
+
+        <!-- Stream Regional y Provincial Cards -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div class="glass-card rounded-2xl p-5 border border-slate-800">
+                <div class="flex items-center justify-between mb-4">
+                    <div class="flex items-center gap-3">
+                        <div class="w-9 h-9 rounded-xl bg-cyan-500/10 flex items-center justify-center text-cyan-400">
+                            <i class="fa-solid fa-building"></i>
+                        </div>
+                        <div>
+                            <h2 class="font-bold text-white text-sm">Zona CD Regionales</h2>
+                            <p class="text-xs text-slate-400">Centros de Distribución por Ciudad</p>
+                        </div>
+                    </div>
+                    <span class="px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/20 text-cyan-300 font-bold text-xs" id="badgeCdTotal">0 UTs Total</span>
+                </div>
+                <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                    <div class="bg-slate-900/60 p-3 rounded-xl border border-slate-800/80">
+                        <span class="text-[11px] text-slate-400 block mb-1">CD Trujillo Mass</span>
+                        <div class="text-lg font-bold text-white flex items-center justify-between">
+                            <span id="cntCdTrujillo">0 UTs</span>
+                            <i class="fa-solid fa-warehouse text-slate-600 text-xs"></i>
+                        </div>
+                    </div>
+                    <div class="bg-slate-900/60 p-3 rounded-xl border border-slate-800/80">
+                        <span class="text-[11px] text-slate-400 block mb-1">CD Piura Mass</span>
+                        <div class="text-lg font-bold text-white flex items-center justify-between">
+                            <span id="cntCdPiura">0 UTs</span>
+                            <i class="fa-solid fa-warehouse text-slate-600 text-xs"></i>
+                        </div>
+                    </div>
+                    <div class="bg-slate-900/60 p-3 rounded-xl border border-slate-800/80">
+                        <span class="text-[11px] text-slate-400 block mb-1">CD Mass Chiclayo</span>
+                        <div class="text-lg font-bold text-white flex items-center justify-between">
+                            <span id="cntCdChiclayo">0 UTs</span>
+                            <i class="fa-solid fa-warehouse text-slate-600 text-xs"></i>
+                        </div>
+                    </div>
+                    <div class="bg-slate-900/60 p-3 rounded-xl border border-slate-800/80">
+                        <span class="text-[11px] text-slate-400 block mb-1">CD Mass Arequipa</span>
+                        <div class="text-lg font-bold text-white flex items-center justify-between">
+                            <span id="cntCdArequipa">0 UTs</span>
+                            <i class="fa-solid fa-warehouse text-slate-600 text-xs"></i>
+                        </div>
+                    </div>
+                    <div class="bg-slate-900/60 p-3 rounded-xl border border-slate-800/80">
+                        <span class="text-[11px] text-slate-400 block mb-1">CD Huancayo</span>
+                        <div class="text-lg font-bold text-white flex items-center justify-between">
+                            <span id="cntCdHuancayo">0 UTs</span>
+                            <i class="fa-solid fa-warehouse text-slate-600 text-xs"></i>
+                        </div>
+                    </div>
+                    <div class="bg-slate-900/60 p-3 rounded-xl border border-slate-800/80">
+                        <span class="text-[11px] text-slate-400 block mb-1">Lima y Callao</span>
+                        <div class="text-lg font-bold text-white flex items-center justify-between">
+                            <span id="cntCdLima">0 UTs</span>
+                            <i class="fa-solid fa-city text-slate-600 text-xs"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="glass-card rounded-2xl p-5 border border-slate-800">
+                <div class="flex items-center justify-between mb-4">
+                    <div class="flex items-center gap-3">
+                        <div class="w-9 h-9 rounded-xl bg-purple-500/10 flex items-center justify-center text-purple-400">
+                            <i class="fa-solid fa-map-location-dot"></i>
+                        </div>
+                        <div>
+                            <h2 class="font-bold text-white text-sm">Zona Provincia</h2>
+                            <p class="text-xs text-slate-400">Makro, Economax, Plaza Vea, PVO</p>
+                        </div>
+                    </div>
+                    <span class="px-3 py-1 rounded-full bg-purple-500/10 border border-purple-500/20 text-purple-300 font-bold text-xs" id="badgeProvTotal">0 UTs Total</span>
+                </div>
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div class="bg-slate-900/60 p-3 rounded-xl border border-slate-800/80">
+                        <span class="text-[11px] text-slate-400 block mb-1">Makro</span>
+                        <div class="text-lg font-bold text-white flex items-center justify-between">
+                            <span id="cntMakro">0 UTs</span>
+                            <i class="fa-solid fa-shop text-amber-400 text-xs"></i>
+                        </div>
+                    </div>
+                    <div class="bg-slate-900/60 p-3 rounded-xl border border-slate-800/80">
+                        <span class="text-[11px] text-slate-400 block mb-1">Economax</span>
+                        <div class="text-lg font-bold text-white flex items-center justify-between">
+                            <span id="cntEconomax">0 UTs</span>
+                            <i class="fa-solid fa-cart-shopping text-emerald-400 text-xs"></i>
+                        </div>
+                    </div>
+                    <div class="bg-slate-900/60 p-3 rounded-xl border border-slate-800/80">
+                        <span class="text-[11px] text-slate-400 block mb-1">Plaza Vea</span>
+                        <div class="text-lg font-bold text-white flex items-center justify-between">
+                            <span id="cntPlazaVea">0 UTs</span>
+                            <i class="fa-solid fa-bag-shopping text-rose-400 text-xs"></i>
+                        </div>
+                    </div>
+                    <div class="bg-slate-900/60 p-3 rounded-xl border border-slate-800/80">
+                        <span class="text-[11px] text-slate-400 block mb-1">PVO</span>
+                        <div class="text-lg font-bold text-white flex items-center justify-between">
+                            <span id="cntPvo">0 UTs</span>
+                            <i class="fa-solid fa-truck text-sky-400 text-xs"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Mapa y Gráfico Circular -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div class="glass-card rounded-2xl p-5 border border-slate-800 lg:col-span-2 flex flex-col">
+                <div class="flex items-center justify-between mb-4">
+                    <div>
+                        <h2 class="font-bold text-white text-sm flex items-center gap-2">
+                            <i class="fa-solid fa-earth-americas text-cyan-400"></i> Mapa Geográfico Sincronizado con Destinos OTM (Perú)
+                        </h2>
+                        <p class="text-xs text-slate-400">Nodos de destino actualizados automáticamente según las unidades en rampa</p>
+                    </div>
+                    <div class="flex items-center gap-3 text-xs text-slate-300">
+                        <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-cyan-400"></span> CD Regionales</span>
+                        <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-amber-400"></span> Makro</span>
+                        <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-emerald-400"></span> Economax</span>
+                        <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-rose-500"></span> Plaza Vea / PVO</span>
+                    </div>
+                </div>
+                <div class="flex-1 min-h-[600px]">
+                    <div id="map" style="height: 600px; width: 100%;"></div>
+                </div>
+            </div>
+
+            <div class="glass-card rounded-2xl p-5 border border-slate-800 flex flex-col justify-between">
+                <div>
+                    <h2 class="font-bold text-white text-sm flex items-center gap-2 mb-1">
+                        <i class="fa-solid fa-chart-pie text-cyan-400"></i> Total de UT por Estado Operativo
+                    </h2>
+                    <p class="text-xs text-slate-400">Proporción actual en tiempo real</p>
+                </div>
+                
+                <div class="relative h-[220px] my-3 flex items-center justify-center">
+                    <canvas id="statusChart"></canvas>
+                </div>
+
+                <div class="grid grid-cols-2 gap-2.5 pt-2 border-t border-slate-800">
+                    <div class="bg-slate-900/80 px-3 py-2 rounded-xl border border-slate-800 flex items-center justify-between">
+                        <div class="flex items-center gap-2">
+                            <span class="w-3 h-3 rounded-full bg-cyan-500 shadow-sm shadow-cyan-500/50"></span>
+                            <span class="text-xs font-semibold text-slate-200">Rampa</span>
+                        </div>
+                        <span class="text-sm font-bold text-cyan-400" id="statLegRampa">0</span>
+                    </div>
+                    <div class="bg-slate-900/80 px-3 py-2 rounded-xl border border-slate-800 flex items-center justify-between">
+                        <div class="flex items-center gap-2">
+                            <span class="w-3 h-3 rounded-full bg-amber-500 shadow-sm shadow-amber-500/50"></span>
+                            <span class="text-xs font-semibold text-slate-200">Cargando</span>
+                        </div>
+                        <span class="text-sm font-bold text-amber-400" id="statLegCargando">0</span>
+                    </div>
+                    <div class="bg-slate-900/80 px-3 py-2 rounded-xl border border-slate-800 flex items-center justify-between">
+                        <div class="flex items-center gap-2">
+                            <span class="w-3 h-3 rounded-full bg-pink-500 shadow-sm shadow-pink-500/50"></span>
+                            <span class="text-xs font-semibold text-slate-200">Por_Guiar</span>
+                        </div>
+                        <span class="text-sm font-bold text-pink-400" id="statLegPorGuiar">0</span>
+                    </div>
+                    <div class="bg-slate-900/80 px-3 py-2 rounded-xl border border-slate-800 flex items-center justify-between">
+                        <div class="flex items-center gap-2">
+                            <span class="w-3 h-3 rounded-full bg-purple-500 shadow-sm shadow-purple-500/50"></span>
+                            <span class="text-xs font-semibold text-slate-200">Planeado</span>
+                        </div>
+                        <span class="text-sm font-bold text-purple-400" id="statLegPlaneado">0</span>
+                    </div>
+                    <div class="bg-slate-900/80 px-3 py-2 rounded-xl border border-slate-800 flex items-center justify-between col-span-2">
+                        <div class="flex items-center gap-2">
+                            <span class="w-3 h-3 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/50"></span>
+                            <span class="text-xs font-semibold text-slate-200">Con_Pesaje</span>
+                        </div>
+                        <span class="text-sm font-bold text-emerald-400" id="statLegConPesaje">0</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tabla detallada de OTM -->
+        <div class="glass-card rounded-2xl p-5 border border-slate-800">
+            <div class="flex flex-wrap items-center justify-between gap-4 mb-5">
+                <div>
+                    <h2 class="font-bold text-white text-base flex items-center gap-2">
+                        <i class="fa-solid fa-table-list text-cyan-400"></i> Detalle General de Unidades OTM (<span id="recordCount" class="text-cyan-400">0</span>)
+                    </h2>
+                    <p class="text-xs text-slate-400">Control operativo, placas, estados y tiempos en rampa</p>
+                </div>
+
+                <div class="flex flex-wrap items-center gap-3">
+                    <div class="relative">
+                        <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-slate-400 text-xs"></i>
+                        <input type="text" id="searchInput" placeholder="Buscar Rampa, Destino, Placa..." oninput="applyFilters()" class="bg-slate-900/90 border border-slate-700 text-xs rounded-xl pl-9 pr-4 py-2 text-white focus:outline-none focus:border-cyan-500 w-56">
+                    </div>
+
+                    <select id="filterZona" onchange="applyFilters()" class="bg-slate-900/90 border border-slate-700 text-xs rounded-xl px-3 py-2 text-white focus:outline-none focus:border-cyan-500">
+                        <option value="ALL">Todas las Zonas</option>
+                        <option value="CD Regionales">CD Regionales</option>
+                        <option value="Provincia">Provincia</option>
+                    </select>
+
+                    <select id="filterEstado" onchange="applyFilters()" class="bg-slate-900/90 border border-slate-700 text-xs rounded-xl px-3 py-2 text-white focus:outline-none focus:border-cyan-500">
+                        <option value="ALL">Todos los Estados</option>
+                        <option value="RAMPA">Rampa</option>
+                        <option value="CARGANDO">Cargando</option>
+                        <option value="POR_GUIAR">Por Guiar</option>
+                        <option value="PLANEADO">Planeado</option>
+                        <option value="CON_PESAJE">Con Pesaje</option>
+                    </select>
+
+                    <select id="filterDestino" onchange="applyFilters()" class="bg-slate-900/90 border border-slate-700 text-xs rounded-xl px-3 py-2 text-white focus:outline-none focus:border-cyan-500">
+                        <option value="ALL">Todos los Destinos</option>
+                        <option value="cd">CDs</option>
+                        <option value="pvea">Plaza Vea</option>
+                        <option value="makro">Makro</option>
+                        <option value="economax">Economax</option>
+                        <option value="pvo">PVO</option>
+                    </select>
+
+                    <button onclick="resetFilters()" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded-xl border border-slate-700 transition" title="Limpiar Filtros">
+                        <i class="fa-solid fa-rotate-right"></i>
+                    </button>
+                </div>
+            </div>
+
+            <div class="overflow-x-auto rounded-xl border border-slate-800">
+                <table class="w-full text-left border-collapse text-xs">
+                    <thead>
+                        <tr class="bg-slate-900/90 text-slate-300 uppercase tracking-wider font-semibold border-b border-slate-800">
+                            <th class="px-3 py-3 text-center border-r border-slate-800">Rampa</th>
+                            <th class="px-3 py-3 border-r border-slate-800">Cod</th>
+                            <th class="px-4 py-3 border-r border-slate-800">Destino</th>
+                            <th class="px-3 py-3 border-r border-slate-800">Placa</th>
+                            <th class="px-3 py-3 border-r border-slate-800">Transportista</th>
+                            <th class="px-3 py-3 text-center border-r border-slate-800">Estado UT</th>
+                            <th class="px-3 py-3 border-r border-slate-800">Tipo de UT</th>
+                            <th class="px-3 py-3 text-center border-r border-slate-800 cursor-pointer hover:text-cyan-400 transition" onclick="toggleTimeSort()">
+                                Hora en Rampa <i id="sortIcon" class="fa-solid fa-sort ml-1 text-cyan-400"></i>
+                            </th>
+                            <th class="px-3 py-3 text-center border-r border-slate-800">Llegada a Rampa</th>
+                            <th class="px-3 py-3 text-center">Acciones</th>
+                        </tr>
+                    </thead>
+                    <tbody id="otmTableBody" class="divide-y divide-slate-800/60 bg-slate-950/20">
+                        <!-- Renderizado dinámico -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </main>
+
+    <!-- Modales -->
+    <div id="pasteModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+        <div class="bg-cardBg border border-slate-700 rounded-2xl max-w-xl w-full p-6 shadow-2xl relative">
+            <button onclick="closePasteModal()" class="absolute top-4 right-4 text-slate-400 hover:text-white"><i class="fa-solid fa-xmark text-lg"></i></button>
+            <h3 class="font-bold text-white text-base mb-1"><i class="fa-solid fa-paste text-amber-400"></i> Pegar Data desde Excel</h3>
+            <textarea id="pasteTextArea" rows="6" placeholder="Pegue aquí los datos..." class="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-xs text-white font-mono focus:outline-none mb-4"></textarea>
+            <div class="flex justify-end gap-3">
+                <button onclick="closePasteModal()" class="px-4 py-2 bg-slate-800 text-slate-300 text-xs rounded-xl">Cancelar</button>
+                <button onclick="processPastedData()" class="px-5 py-2 bg-amber-600 text-white text-xs font-semibold rounded-xl">Procesar Data</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="recordModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+        <div class="bg-cardBg border border-slate-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl relative">
+            <button onclick="closeRecordModal()" class="absolute top-4 right-4 text-slate-400 hover:text-white"><i class="fa-solid fa-xmark text-lg"></i></button>
+            <h3 id="modalTitle" class="font-bold text-white text-base mb-4">Registrar Nueva Unidad OTM</h3>
+            <form id="recordForm" onsubmit="saveRecord(event)" class="space-y-4">
+                <input type="hidden" id="recordDocId">
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-[11px] font-semibold text-slate-300 mb-1">Rampa</label>
+                        <input type="text" id="inputRampa" required class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-semibold text-slate-300 mb-1">Código (Cod)</label>
+                        <input type="text" id="inputCod" required class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white">
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-[11px] font-semibold text-slate-300 mb-1">Destino</label>
+                    <input type="text" id="inputDestino" required class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white uppercase">
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-[11px] font-semibold text-slate-300 mb-1">Placa</label>
+                        <input type="text" id="inputPlaca" required class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white uppercase">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-semibold text-slate-300 mb-1">Transportista</label>
+                        <input type="text" id="inputTransportista" required class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white uppercase">
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-[11px] font-semibold text-slate-300 mb-1">Estado UT</label>
+                        <select id="inputEstado" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white">
+                            <option value="RAMPA">RAMPA</option>
+                            <option value="CARGANDO">CARGANDO</option>
+                            <option value="POR_GUIAR">POR GUIAR</option>
+                            <option value="PLANEADO">PLANEADO</option>
+                            <option value="CON_PESAJE">CON PESAJE</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-semibold text-slate-300 mb-1">Tipo de UT</label>
+                        <select id="inputTipoUt" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white">
+                            <option value="PALETERO_46-52P">PALETERO_46-52P</option>
+                            <option value="FURGON_24-26P">FURGON_24-26P</option>
+                            <option value="FURGON_18P">FURGON_18P</option>
+                            <option value="PALETERO_36P">PALETERO_36P</option>
+                            <option value="CAMION_16P">CAMION_16P</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-[11px] font-semibold text-slate-300 mb-1">Hora en Rampa</label>
+                        <input type="text" id="inputHoraRampa" required class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-semibold text-slate-300 mb-1">Llegada a Rampa</label>
+                        <input type="text" id="inputLlegada" required class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white">
+                    </div>
+                </div>
+                <div class="flex justify-end gap-3 pt-2">
+                    <button type="button" onclick="closeRecordModal()" class="px-4 py-2 bg-slate-800 text-slate-300 text-xs font-semibold rounded-xl">Cancelar</button>
+                    <button type="submit" class="px-5 py-2 bg-cyan-600 text-white text-xs font-semibold rounded-xl">Guardar</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            setInterval(() => {
+                const now = new Date();
+                const clockEl = document.getElementById('liveClock');
+                if (clockEl) {
+                    clockEl.innerText = now.toLocaleDateString('es-ES', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' }) + ', ' + now.toLocaleTimeString('es-ES');
+                }
+            }, 1000);
+
+            try {
+                window.mapInstance = L.map('map').setView([-9.19, -75.0152], 5);
+                L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+                    attribution: 'Tiles &copy; Esri',
+                    maxZoom: 18
+                }).addTo(window.mapInstance);
+
+                setTimeout(() => {
+                    if (window.mapInstance) window.mapInstance.invalidateSize();
+                }, 250);
+            } catch (e) {
+                console.error(e);
+            }
+
+            window.loadCloudData();
+            window.updateDashboardUI();
+        });
+    </script>
+</body>
+</html>
